@@ -1,0 +1,62 @@
+// roboshop-app/shipping/Jenkinsfile — Day 70 version (Day 72 replaces the body with the shared library)
+pipeline {
+  agent {
+    kubernetes {
+      defaultContainer 'maven'
+      yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+    - name: maven
+      image: maven:3.9-eclipse-temurin-17   # match the JDK your shipping Dockerfile uses (Day 26)
+      command: ["sleep"]
+      args: ["infinity"]
+      env:
+        - name: MAVEN_OPTS
+          value: "-Xmx768m"
+        - name: HOME
+          value: /home/jenkins/agent        # writable; ~/.m2 lives in the workspace volume
+      resources:
+        requests: { cpu: 500m, memory: 1Gi }
+        limits:   { memory: 1536Mi }
+'''
+    }
+  }
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    timestamps()
+  }
+  triggers { pollSCM('H/5 * * * *') }
+  stages {
+    stage('Build & unit test') {
+      when { anyOf { changeset 'shipping/**'; triggeredBy 'UserIdCause' } }
+      steps {
+        dir('shipping') {
+          sh 'mvn -B -ntp -Dmaven.repo.local=$HOME/.m2 package'
+        }
+      }
+      post {
+        always { junit allowEmptyResults: true, testResults: 'shipping/target/surefire-reports/*.xml' }
+      }
+    }
+    stage('Archive') {
+      when { anyOf { changeset 'shipping/**'; triggeredBy 'UserIdCause' } }
+      steps { archiveArtifacts artifacts: 'shipping/target/*.jar', fingerprint: true }
+    }
+  }
+  post {
+    success { echo "shipping built from ${env.GIT_COMMIT}" }
+    cleanup { cleanWs() }
+  }
+}
+
+// roboshop-app/shipping/Jenkinsfile
+@Library('roboshop-lib') _
+javaEKSPipeline(service: 'shipping', buildImage: 'maven:3.9-eclipse-temurin-17')

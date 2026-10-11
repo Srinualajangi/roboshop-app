@@ -1,0 +1,4 @@
+# hadolint config — every ignore needs a reason
+failure-threshold: warning
+ignored:
+  - DL3008   # build-stage apt packages are not shipped; runtime images have no apt installs

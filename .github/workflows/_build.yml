@@ -1,0 +1,203 @@
+# .github/workflows/_build.yml — THE pipeline. Called once per service by ci.yml.
+name: _build
+
+on:
+  workflow_call:
+    inputs:
+      service: { type: string, required: true }   # ECR repo suffix, e.g. cart
+      dir:     { type: string, required: true }   # folder with the Dockerfile, e.g. cart
+      lang:    { type: string, required: true }   # node | python | java | go | php | static | data
+      push:    { type: boolean, default: false }  # true only for main
+    outputs:
+      tag:
+        value: ${{ jobs.image.outputs.tag }}
+      digest:
+        value: ${{ jobs.image.outputs.digest }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ${{ vars.ECR_REGISTRY }}/roboshop/${{ inputs.service }}
+  TRIVY_VERSION: "0.0.0"          # ← pin (no leading v)
+  TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+  TRIVY_JAVA_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-java-db
+
+jobs:
+  test:
+    name: test + SCA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------- Node (catalogue, user, cart) ----------
+      - if: inputs.lang == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ${{ inputs.dir }}/package-lock.json
+      - if: inputs.lang == 'node'
+        name: npm ci + test + audit
+        run: |
+          npm ci --no-audit --no-fund
+          for f in *.js; do node --check "$f"; done
+          npm test --if-present
+          npm audit --omit=dev --audit-level=high || { [ "${{ vars.ENFORCE_SCA }}" != "true" ] && echo "::warning::npm audit findings (report-only)"; }
+
+      # ---------- Python (payment) ----------
+      - if: inputs.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'          # match the payment Dockerfile
+          cache: pip
+          cache-dependency-path: ${{ inputs.dir }}/requirements.txt
+      - if: inputs.lang == 'python'
+        name: compile + pip-audit
+        run: |
+          python -m pip install --quiet pip-audit
+          python -m compileall -q .
+          pip-audit -r requirements.txt || { [ "${{ vars.ENFORCE_SCA }}" != "true" ] && echo "::warning::pip-audit findings (report-only)"; }
+
+      # ---------- Java (shipping) ----------
+      - if: inputs.lang == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'              # match the shipping Dockerfile's JDK
+          cache: maven
+      - if: inputs.lang == 'java'
+        name: mvn verify
+        run: mvn -B -ntp verify
+
+      # ---------- Go (dispatch) ----------
+      - if: inputs.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - if: inputs.lang == 'go'
+        name: go vet + test
+        run: |
+          if [ -f go.mod ]; then go vet ./... && go test ./...; else echo "::warning::no go.mod — Phase 3 should have added one"; fi
+
+      # ---------- PHP / static / data: nothing to unit-test; image scan still applies ----------
+      - if: contains(fromJSON('["php","static","data"]'), inputs.lang)
+        run: echo "No unit tests for lang=${{ inputs.lang }}; relying on image build + scans."
+
+  scan-fs:
+    name: trivy fs
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install trivy
+        run: curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | sudo tar -xz -C /usr/local/bin trivy
+      - run: trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif "${{ inputs.dir }}"
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs-${{ inputs.service }}
+      - run: trivy fs --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 --ignorefile .trivyignore.yaml "${{ inputs.dir }}"
+
+  image:
+    name: build → scan → push → sign
+    needs: [test, scan-fs]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (load locally)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.dir }}
+          load: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.title=roboshop-${{ inputs.service }}
+          cache-from: type=gha,scope=${{ inputs.service }}
+          cache-to: type=gha,scope=${{ inputs.service }},mode=max
+      - name: Install trivy
+        run: curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | sudo tar -xz -C /usr/local/bin trivy
+      - run: trivy image --severity HIGH,CRITICAL --format sarif -o trivy-image.sarif "$IMAGE:${{ steps.meta.outputs.tag }}"
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image-${{ inputs.service }}
+      - name: Gate — block on fixable CRITICAL
+        run: trivy image --severity CRITICAL --ignore-unfixed --exit-code 1 --ignorefile .trivyignore.yaml "$IMAGE:${{ steps.meta.outputs.tag }}"
+
+      - if: inputs.push
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 900
+      - if: inputs.push
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Skip if this tag already exists (immutable repo, re-runs)
+        if: inputs.push
+        id: exists
+        run: |
+          if aws ecr describe-images --repository-name "roboshop/${{ inputs.service }}" --image-ids imageTag=${{ steps.meta.outputs.tag }} >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"; echo "::notice::tag already in ECR — skipping push"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Push
+        id: push
+        if: inputs.push && steps.exists.outputs.found == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.dir }}
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.title=roboshop-${{ inputs.service }}
+          cache-from: type=gha,scope=${{ inputs.service }}
+      - name: SBOM
+        if: steps.push.outcome == 'success'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-${{ inputs.service }}.cdx.json
+          upload-artifact: true
+      - if: steps.push.outcome == 'success'
+        uses: sigstore/cosign-installer@v3
+      - name: Sign + attest SBOM
+        if: steps.push.outcome == 'success'
+        env:
+          REF: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+        run: |
+          cosign sign --yes "$REF"
+          cosign attest --yes --type cyclonedx --predicate "sbom-${{ inputs.service }}.cdx.json" "$REF"
+      - name: Summary
+        if: always()
+        run: echo "| ${{ inputs.service }} | \`${{ steps.meta.outputs.tag }}\` | \`${{ steps.push.outputs.digest || '-' }}\` |" >> "$GITHUB_STEP_SUMMARY"

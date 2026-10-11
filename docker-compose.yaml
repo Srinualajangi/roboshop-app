@@ -1,0 +1,144 @@
+# RoboShop on one host. Usage: scripts/compose-env.sh && docker compose up -d --build
+name: roboshop
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "2" }
+
+x-app: &app            # settings shared by every application service
+  restart: unless-stopped
+  networks: [roboshop]
+  logging: *logging
+
+services:
+  # ---------- datastores ----------
+  mongodb:
+    <<: *app
+    build: ./mongo
+    image: ${IMAGE_PREFIX:-roboshop}/mongodb:${TAG:-dev}
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping:1})' || mongo --quiet --eval 'db.adminCommand({ping:1})'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  mysql:
+    <<: *app
+    build: ./mysql
+    image: ${IMAGE_PREFIX:-roboshop}/mysql:${TAG:-dev}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?run scripts/compose-env.sh first}
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      # TCP ping fails while the init scripts run (temporary server has networking off) → healthy only when really ready
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+  redis:
+    <<: *app
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+  rabbitmq:
+    <<: *app
+    image: rabbitmq:3-management-alpine
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  # ---------- application services (HEALTHCHECK comes from each Dockerfile) ----------
+  catalogue:
+    <<: *app
+    build: ./catalogue
+    image: ${IMAGE_PREFIX:-roboshop}/catalogue:${TAG:-dev}
+    environment:
+      MONGO_URL: mongodb://mongodb:27017/catalogue
+    depends_on:
+      mongodb: { condition: service_healthy }
+  user:
+    <<: *app
+    build: ./user
+    image: ${IMAGE_PREFIX:-roboshop}/user:${TAG:-dev}
+    environment:
+      MONGO_URL: mongodb://mongodb:27017/users
+      REDIS_HOST: redis
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  cart:
+    <<: *app
+    build: ./cart
+    image: ${IMAGE_PREFIX:-roboshop}/cart:${TAG:-dev}
+    environment:
+      REDIS_HOST: redis
+      CATALOGUE_HOST: catalogue
+    depends_on:
+      redis: { condition: service_healthy }
+      catalogue: { condition: service_healthy }
+  shipping:
+    <<: *app
+    build: ./shipping
+    image: ${IMAGE_PREFIX:-roboshop}/shipping:${TAG:-dev}
+    mem_limit: 768m
+    environment:
+      CART_ENDPOINT: cart:8080
+      DB_HOST: mysql
+    depends_on:
+      mysql: { condition: service_healthy }
+      cart: { condition: service_healthy }
+  ratings:
+    <<: *app
+    build: ./ratings
+    image: ${IMAGE_PREFIX:-roboshop}/ratings:${TAG:-dev}
+    environment:
+      APP_ENV: prod
+      PDO_URL: mysql:host=mysql;dbname=ratings;charset=utf8mb4
+    depends_on:
+      mysql: { condition: service_healthy }
+  payment:
+    <<: *app
+    build: ./payment
+    image: ${IMAGE_PREFIX:-roboshop}/payment:${TAG:-dev}
+    environment:
+      CART_HOST: cart
+      USER_HOST: user
+      AMQP_HOST: rabbitmq
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      cart: { condition: service_healthy }
+      user: { condition: service_healthy }
+  dispatch:
+    <<: *app
+    build: ./dispatch
+    image: ${IMAGE_PREFIX:-roboshop}/dispatch:${TAG:-dev}
+    environment:
+      AMQP_HOST: rabbitmq
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+  web:
+    <<: *app
+    build: ./web
+    image: ${IMAGE_PREFIX:-roboshop}/web:${TAG:-dev}
+    ports:
+      - "80:8080"          # workstation :80 is what `make tunnel` forwards to laptop localhost:8080
+    depends_on:
+      catalogue: { condition: service_healthy }
+      user: { condition: service_healthy }
+      cart: { condition: service_healthy }
+      shipping: { condition: service_healthy }
+      ratings: { condition: service_healthy }
+      payment: { condition: service_healthy }
+
+networks:
+  roboshop:
+    name: roboshop        # fixed name so `docker run --network roboshop` (load-gen, debugging) can join it
+
+volumes:
+  mongo-data:
+  mysql-data:

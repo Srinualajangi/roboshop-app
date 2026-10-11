@@ -1,0 +1,8 @@
+# .trivyignore.yaml — every accepted risk has a reason, an owner and an expiry date.
+# When expired_at passes, Trivy stops ignoring it and the build fails again: forced review.
+vulnerabilities:
+  # - id: CVE-2024-00000
+  #   paths:
+  #     - "usr/lib/node_modules/npm/node_modules/some-lib/package.json"
+  #   statement: "Only in npm itself, not used at runtime. Owner: <you>. Fix: move to distroless (Phase 3 follow-up)."
+  #   expired_at: 2026-12-31

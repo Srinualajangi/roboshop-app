@@ -1,0 +1,104 @@
+# .github/workflows/ci.yml — detect changed services, fan out _build.yml per service.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: Build every service
+        type: boolean
+        default: false
+
+# PRs: a new push cancels the old run. main: never cancel — every merge must produce an image.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "0.0.0"      # ← pin (no leading v)
+
+jobs:
+  gitleaks:
+    name: secrets (gitleaks)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | sudo tar -xz -C /usr/local/bin gitleaks
+      - run: gitleaks git --redact --verbose --report-format sarif --report-path gitleaks.sarif .
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+  changes:
+    name: detect changed services
+    runs-on: ubuntu-24.04
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FORCE: ${{ inputs.force_all }}
+        run: |
+          all=false; files=""
+          if [ "$FORCE" = "true" ] || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            all=true                                   # manual "build all", first push, or force-push
+          else
+            files=$(git diff --name-only "$BASE" "$GITHUB_SHA")
+            if echo "$files" | grep -qE '^(\.github/|ci/|\.trivyignore\.yaml)'; then all=true; fi
+          fi
+          if [ "$all" = true ]; then
+            svcs=$(jq -c '.' ci/services.json)
+          else
+            svcs=$(jq -c --arg f "$files" '[.[] | select(.dir as $d | ($f | split("\n") | any(startswith($d + "/"))))]' ci/services.json)
+          fi
+          echo "services=$svcs" >> "$GITHUB_OUTPUT"
+          echo "### Services to build" >> "$GITHUB_STEP_SUMMARY"
+          echo "$svcs" | jq -r '.[].name' | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build
+    needs: [gitleaks, changes]
+    if: needs.changes.outputs.services != '[]'
+    strategy:
+      fail-fast: false                 # one broken service must not hide the others' results
+      max-parallel: 5
+      matrix:
+        svc: ${{ fromJSON(needs.changes.outputs.services) }}
+    uses: ./.github/workflows/_build.yml
+    with:
+      service: ${{ matrix.svc.name }}
+      dir: ${{ matrix.svc.dir }}
+      lang: ${{ matrix.svc.lang }}
+      push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+
+  # The ONE check that branch protection requires (Day 65). Green only if everything above is green or skipped.
+  ci-ok:
+    if: always()
+    needs: [gitleaks, changes, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: All required jobs passed?
+        run: |
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'

@@ -1,0 +1,12 @@
+[
+  {"name": "web",       "dir": "web",       "lang": "static"},
+  {"name": "catalogue", "dir": "catalogue", "lang": "node"},
+  {"name": "user",      "dir": "user",      "lang": "node"},
+  {"name": "cart",      "dir": "cart",      "lang": "node"},
+  {"name": "shipping",  "dir": "shipping",  "lang": "java"},
+  {"name": "payment",   "dir": "payment",   "lang": "python"},
+  {"name": "ratings",   "dir": "ratings",   "lang": "php"},
+  {"name": "dispatch",  "dir": "dispatch",  "lang": "go"},
+  {"name": "mongodb",   "dir": "mongo",     "lang": "data"},
+  {"name": "mysql",     "dir": "mysql",     "lang": "data"}
+]
