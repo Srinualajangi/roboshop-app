@@ -2,7 +2,7 @@
 # RoboShop shipping — Spring Boot 2.3 / Java 8. Upstream: debian:10 + openjdk:8-jdk as root.
 
 ########## build stage: JDK + Maven (never shipped) ##########
-FROM maven:3.9-eclipse-temurin-8 AS build
+FROM maven:3.9-eclipse-temurin-8@sha256:0f402712b7a469189cfea5ec69cdcadcb32b22aaf1ea62777ab925c3d8470175 AS build
 WORKDIR /src
 # 1) dependencies only — cached until pom.xml changes
 COPY pom.xml .
@@ -12,7 +12,7 @@ COPY src ./src
 RUN mvn -B -q package -DskipTests && ls -l target/*.jar
 
 ########## runtime stage: JRE only ##########
-FROM eclipse-temurin:8-jre
+FROM eclipse-temurin:8-jre@sha256:7806d0570e7234dccae4232e8273e87a0fcb74ca7c6f8692c9f5c672f355fd1d
 ARG GIT_SHA=unknown
 ARG VERSION=0.0.0-dev
 LABEL org.opencontainers.image.title="roboshop-shipping" \
