@@ -100,7 +100,7 @@ jobs:
       - name: Install trivy
         run: curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | sudo tar -xz -C /usr/local/bin trivy
       - run: trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif "${{ inputs.dir }}"
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-fs.sarif
@@ -142,7 +142,7 @@ jobs:
       - name: Install trivy
         run: curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | sudo tar -xz -C /usr/local/bin trivy
       - run: trivy image --severity HIGH,CRITICAL --format sarif -o trivy-image.sarif "$IMAGE:${{ steps.meta.outputs.tag }}"
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-image.sarif
