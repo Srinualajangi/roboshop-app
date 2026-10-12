@@ -6,10 +6,6 @@ FROM php:7.4-apache@sha256:c9d7e608f73832673479770d66aacc8100011ec751d1905ff63fa
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="roboshop-ratings" org.opencontainers.image.revision="${GIT_SHA}"
 # php:7.4 is Debian 11 (bullseye, end of life): fall back to archive.debian.org when the mirrors are gone (tracked exception)
-RUN (apt-get update || { sed -i 's|deb.debian.org|archive.debian.org|g; /security/d' /etc/apt/sources.list && apt-get update; }) \
- && apt-get install -yqq --no-install-recommends unzip libzip-dev \
- && docker-php-ext-install pdo_mysql opcache zip \
- && rm -rf /var/lib/apt/lists/*
 # Listen on 8080 instead of 80 so Apache does not need root; enable mod_rewrite for Symfony routing
 RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
  && sed -i '/security/d' /etc/apt/sources.list \
