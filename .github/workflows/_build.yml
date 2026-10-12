@@ -51,7 +51,7 @@ jobs:
 
       # ---------- Python (payment) ----------
       - if: inputs.lang == 'python'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'          # match the payment Dockerfile
           cache: pip
