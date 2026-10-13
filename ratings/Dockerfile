@@ -1,15 +1,43 @@
 # syntax=docker/dockerfile:1
-# RoboShop ratings — PHP 7.4 / Symfony 5 on Apache. composer.json requires "php": "^7.4", so we stay on 7.4 for the baseline.
-FROM composer:2@sha256:af98f42dfff7c68ba8d53c2164fd9fde1087b7d449514baa38c418b1f6bc4bac AS composer
 
-FROM php:7.4-apache@sha256:c9d7e608f73832673479770d66aacc8100011ec751d1905ff63fae3fe2e0ca6d
-ARG GIT_SHA=unknown
-LABEL org.opencontainers.image.title="roboshop-ratings" org.opencontainers.image.revision="${GIT_SHA}"
-# php:7.4 is Debian 11 (bullseye, end of life): fall back to archive.debian.org when the mirrors are gone (tracked exception)
-# Listen on 8080 instead of 80 so Apache does not need root; enable mod_rewrite for Symfony routing
+FROM composer:2 AS composer
+
+FROM php:7.4-apache
+
+# Debian Bullseye archive fix
 RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
  && sed -i '/security/d' /etc/apt/sources.list \
  && apt-get update \
  && apt-get install -yqq --no-install-recommends unzip libzip-dev \
  && docker-php-ext-install pdo_mysql opcache zip \
  && rm -rf /var/lib/apt/lists/*
+
+# Enable AutoProfile for PHP
+RUN echo "instana.enable_auto_profile=1" > "/usr/local/etc/php/conf.d/zzz-instana-extras.ini"
+
+# Relax permissions on status
+COPY status.conf /etc/apache2/mods-available/status.conf
+
+# Enable Apache modules
+RUN a2enmod rewrite && a2enmod status
+
+# Run Apache on 8080 instead of 80
+RUN sed -i 's/Listen 80/Listen 8080/' /etc/apache2/ports.conf \
+ && sed -i 's/:80/:8080/' /etc/apache2/sites-available/000-default.conf
+
+WORKDIR /var/www/html
+
+COPY html/ /var/www/html
+
+COPY --from=composer /usr/bin/composer /usr/bin/composer
+
+RUN composer install --no-interaction
+
+# Symfony permissions
+RUN rm -rf /var/www/var/* \
+ && chown -R www-data:www-data /var/www \
+ && chmod -R 777 /var/www
+
+EXPOSE 8080
+
+CMD ["apache2-foreground"]
