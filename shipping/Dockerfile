@@ -26,7 +26,7 @@ COPY --from=build /src/target/shipping-1.0.jar app.jar
 
 ENV CART_ENDPOINT=cart:8080 \
     DB_HOST=mysql \
-    JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+    JAVA_OPTS="-Xms256m -Xmx512m -XX:+ExitOnOutOfMemoryError"
 USER 10001:10001
 EXPOSE 8080
 # no curl in this image: use bash's /dev/tcp to send a tiny HTTP request
